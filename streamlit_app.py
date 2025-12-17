@@ -60,8 +60,147 @@ def parse_task_list(file_path):
         st.warning(f"Could not parse Task List: {e}")
         return "No Task List examples available."
 
+def create_smart_summary(df, sheet_name):
+    """Create intelligent summary based on sheet type"""
+    summary = f"\n### Sheet: {sheet_name}\n"
+    summary += f"- Rows: {len(df)}\n"
+    summary += f"- Columns: {len(df.columns)}\n"
+    summary += f"- Column Names: {', '.join(df.columns.tolist())}\n"
+
+    # Check if this is transaction-level data (GL Detail)
+    is_gl_detail = 'GL Detail' in sheet_name or len(df) > 1000
+
+    # Find key columns
+    date_cols = [col for col in df.columns if 'date' in col.lower() or 'year' in col.lower()]
+    amount_cols = [col for col in df.columns if 'amount' in col.lower() or 'debit' in col.lower() or 'credit' in col.lower()]
+    account_cols = [col for col in df.columns if 'account' in col.lower() or 'description' in col.lower() or 'name' in col.lower()]
+    vendor_cols = [col for col in df.columns if 'vendor' in col.lower() or 'customer' in col.lower()]
+
+    if is_gl_detail and amount_cols:
+        # For transaction data, provide aggregations
+        summary += f"\n**Transaction Analysis (from {len(df):,} transactions):**\n"
+
+        # Year-based analysis
+        year_col = None
+        if 'Year' in df.columns:
+            year_col = 'Year'
+        elif date_cols:
+            date_col = date_cols[0]
+            try:
+                df['Parsed_Year'] = pd.to_datetime(df[date_col], errors='coerce').dt.year
+                year_col = 'Parsed_Year'
+            except Exception as e:
+                pass
+
+        if year_col and year_col in df.columns:
+            try:
+                # Aggregate by year
+                year_summary = df.groupby(year_col)[amount_cols[0]].sum().sort_index()
+                summary += f"\n**Total by Year:**\n"
+                for year, total in year_summary.items():
+                    if pd.notna(year) and year > 2000 and year < 2030:  # Filter to realistic years
+                        summary += f"- {int(year)}: ${total:,.2f}\n"
+            except Exception as e:
+                pass
+
+        # Account-level breakdown with year comparison
+        if account_cols and year_col:
+            account_col = account_cols[0]
+            try:
+                # Get top accounts by amount
+                top_accounts = df.groupby(account_col)[amount_cols[0]].sum().abs().sort_values(ascending=False).head(15)
+                summary += f"\n**Top 15 Accounts by Amount:**\n"
+                for account, total in top_accounts.items():
+                    summary += f"- {account}: ${total:,.2f}\n"
+
+                # Year-over-year comparison for top expense accounts
+                # Look for subcontractor/expense-related accounts
+                expense_keywords = ['subcontract', 'expense', '5000', 'cost', 'vendor']
+                expense_accounts = [acc for acc in top_accounts.index if any(kw in str(acc).lower() for kw in expense_keywords)]
+
+                if expense_accounts and len(expense_accounts) > 0:
+                    summary += f"\n**Year-over-Year Analysis (Key Expense Accounts):**\n"
+                    for account in expense_accounts[:5]:  # Top 5 expense accounts
+                        year_data = df[df[account_col] == account].groupby(year_col)[amount_cols[0]].sum().abs()
+                        if len(year_data) > 1:
+                            summary += f"\n{account}:\n"
+                            for year, amount in year_data.sort_index().items():
+                                if pd.notna(year) and year > 2000 and year < 2030:
+                                    summary += f"  - {int(year)}: ${amount:,.2f}\n"
+            except Exception as e:
+                pass
+
+        # Project-level analysis
+        project_cols = [col for col in df.columns if 'project' in col.lower()]
+        if project_cols:
+            project_col = project_cols[0]
+            try:
+                top_projects = df.groupby(project_col)[amount_cols[0]].sum().abs().sort_values(ascending=False).head(10)
+                summary += f"\n**Top 10 Projects by Amount:**\n"
+                for project, total in top_projects.items():
+                    if pd.notna(project) and str(project) != 'nan' and project != 0:
+                        summary += f"- {project}: ${total:,.2f}\n"
+            except Exception as e:
+                pass
+
+        # Description-based analysis (look for work types)
+        desc_cols = [col for col in df.columns if 'description' in col.lower() or 'gl_description' in col.lower()]
+        if desc_cols:
+            desc_col = desc_cols[0]
+            try:
+                # Look for key work types (sprinkler, HVAC, electrical, etc.)
+                work_types = ['sprinkler', 'hvac', 'electrical', 'plumbing', 'concrete', 'roofing']
+                summary += f"\n**Work Type Analysis:**\n"
+                for work_type in work_types:
+                    work_data = df[df[desc_col].astype(str).str.contains(work_type, case=False, na=False)]
+                    if len(work_data) > 0:
+                        total = work_data[amount_cols[0]].abs().sum()
+                        if total > 1000:  # Only show if significant
+                            summary += f"- {work_type.title()}: ${total:,.2f} ({len(work_data)} transactions)\n"
+            except Exception as e:
+                pass
+
+        # Vendor/Customer breakdown
+        if vendor_cols and len(vendor_cols) > 0:
+            vendor_col = vendor_cols[0]
+            try:
+                top_vendors = df.groupby(vendor_col)[amount_cols[0]].sum().abs().sort_values(ascending=False).head(10)
+                summary += f"\n**Top 10 by {vendor_col}:**\n"
+                for vendor, total in top_vendors.items():
+                    if pd.notna(vendor) and vendor != '':
+                        summary += f"- {vendor}: ${total:,.2f}\n"
+            except Exception as e:
+                pass
+
+        # Sample transactions from different years
+        summary += f"\n**Sample Transactions:**\n"
+        if 'Year' in df.columns:
+            # Get samples from 2024 and 2023
+            for year in sorted(df['Year'].dropna().unique(), reverse=True)[:2]:
+                year_data = df[df['Year'] == year].head(3)
+                if len(year_data) > 0:
+                    summary += f"\n*{int(year)} samples:*\n"
+                    summary += year_data[[col for col in df.columns if col != 'Year']].head(3).to_markdown(index=False)
+                    summary += "\n"
+        else:
+            # Just show first few rows
+            summary += df.head(5).to_markdown(index=False)
+    else:
+        # For summary sheets, show more rows
+        summary += f"\n**Data:**\n"
+        summary += df.head(10).to_markdown(index=False)
+
+        # Add basic stats
+        numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+        if numeric_cols:
+            summary += f"\n\n**Key Statistics:**\n"
+            for col in numeric_cols[:3]:
+                summary += f"- {col}: min={df[col].min():.2f}, max={df[col].max():.2f}, mean={df[col].mean():.2f}\n"
+
+    return summary
+
 def load_excel_data(file_path_or_buffer, file_name=""):
-    """Load and summarize Excel data - optimized for token limits"""
+    """Load and summarize Excel data with intelligent aggregations"""
     try:
         # Read all sheets
         excel_file = pd.ExcelFile(file_path_or_buffer)
@@ -73,28 +212,14 @@ def load_excel_data(file_path_or_buffer, file_name=""):
             try:
                 df = pd.read_excel(file_path_or_buffer, sheet_name=sheet_name)
 
-                # Skip empty sheets to save tokens
+                # Skip empty sheets
                 if len(df) == 0:
                     continue
 
-                # Create summary for this sheet
-                summary = f"\n### Sheet: {sheet_name}\n"
-                summary += f"- Rows: {len(df)}\n"
-                summary += f"- Columns: {len(df.columns)}\n"
-                summary += f"- Column Names: {', '.join(df.columns.tolist())}\n"
-
-                # Add sample data (reduced to 3 rows to save tokens)
-                summary += f"\n**Sample Data (first 3 rows):**\n"
-                summary += df.head(3).to_markdown(index=False)
-
-                # Add basic stats for numeric columns (limit to 3 columns)
-                numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
-                if numeric_cols:
-                    summary += f"\n\n**Key Statistics:**\n"
-                    for col in numeric_cols[:3]:  # Limited to 3 numeric columns
-                        summary += f"- {col}: min={df[col].min():.2f}, max={df[col].max():.2f}, mean={df[col].mean():.2f}\n"
-
+                # Create smart summary based on data type
+                summary = create_smart_summary(df, sheet_name)
                 data_summary[sheet_name] = summary
+
             except Exception as sheet_error:
                 st.warning(f"Could not load sheet '{sheet_name}': {sheet_error}")
                 continue
