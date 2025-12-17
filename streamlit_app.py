@@ -67,31 +67,40 @@ def load_excel_data(file_path_or_buffer, file_name=""):
         excel_file = pd.ExcelFile(file_path_or_buffer)
         data_summary = {}
 
+        st.info(f"Loading {file_name}: Found {len(excel_file.sheet_names)} sheets")
+
         for sheet_name in excel_file.sheet_names:
-            df = pd.read_excel(file_path_or_buffer, sheet_name=sheet_name)
+            try:
+                df = pd.read_excel(file_path_or_buffer, sheet_name=sheet_name)
 
-            # Create summary for this sheet
-            summary = f"\n### Sheet: {sheet_name}\n"
-            summary += f"- Rows: {len(df)}\n"
-            summary += f"- Columns: {len(df.columns)}\n"
-            summary += f"- Column Names: {', '.join(df.columns.tolist())}\n"
+                # Create summary for this sheet
+                summary = f"\n### Sheet: {sheet_name}\n"
+                summary += f"- Rows: {len(df)}\n"
+                summary += f"- Columns: {len(df.columns)}\n"
+                summary += f"- Column Names: {', '.join(df.columns.tolist())}\n"
 
-            # Add sample data (first 10 rows)
-            summary += f"\n**Sample Data (first 10 rows):**\n"
-            summary += df.head(10).to_markdown(index=False)
+                # Add sample data (first 10 rows)
+                summary += f"\n**Sample Data (first 10 rows):**\n"
+                summary += df.head(10).to_markdown(index=False)
 
-            # Add basic stats for numeric columns
-            numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
-            if numeric_cols:
-                summary += f"\n\n**Numeric Column Statistics:**\n"
-                for col in numeric_cols[:5]:  # First 5 numeric columns
-                    summary += f"- {col}: min={df[col].min():.2f}, max={df[col].max():.2f}, mean={df[col].mean():.2f}\n"
+                # Add basic stats for numeric columns
+                numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+                if numeric_cols:
+                    summary += f"\n\n**Numeric Column Statistics:**\n"
+                    for col in numeric_cols[:5]:  # First 5 numeric columns
+                        summary += f"- {col}: min={df[col].min():.2f}, max={df[col].max():.2f}, mean={df[col].mean():.2f}\n"
 
-            data_summary[sheet_name] = summary
+                data_summary[sheet_name] = summary
+            except Exception as sheet_error:
+                st.warning(f"Could not load sheet '{sheet_name}': {sheet_error}")
+                continue
 
+        st.success(f"Successfully loaded {len(data_summary)} sheets from {file_name}")
         return data_summary
     except Exception as e:
-        st.error(f"Error loading Excel file: {e}")
+        st.error(f"Error loading Excel file '{file_name}': {e}")
+        import traceback
+        st.error(f"Traceback: {traceback.format_exc()}")
         return {}
 
 def create_data_context(data_summary):
@@ -191,18 +200,28 @@ def main():
 
             if st.button("Load Repository Files", type="primary"):
                 with st.spinner("Loading files..."):
+                    # Reset data summary
+                    st.session_state.data_summary = {}
+
                     # Load GL Transactions
                     if os.path.exists(gl_path):
                         gl_data = load_excel_data(gl_path, "GL Transactions")
+                        st.write(f"DEBUG: GL data has {len(gl_data)} sheets")
                         st.session_state.data_summary.update(gl_data)
+                    else:
+                        st.error(f"File not found: {gl_path}")
 
                     # Load Databook
                     if os.path.exists(databook_path):
                         databook_data = load_excel_data(databook_path, "Databook")
+                        st.write(f"DEBUG: Databook data has {len(databook_data)} sheets")
                         st.session_state.data_summary.update(databook_data)
+                    else:
+                        st.error(f"File not found: {databook_path}")
 
+                    st.write(f"DEBUG: Total sheets in session state: {len(st.session_state.data_summary)}")
                     st.session_state.data_loaded = True
-                    st.success("Files loaded successfully!")
+                    st.success(f"Files loaded successfully! Total sheets: {len(st.session_state.data_summary)}")
                     st.rerun()
 
         else:  # Upload mode
@@ -227,20 +246,37 @@ def main():
                         for uploaded_file in excel_files:
                             # Read file into bytes
                             file_data = io.BytesIO(uploaded_file.getvalue())
+                            st.write(f"Processing: {uploaded_file.name}")
                             file_summary = load_excel_data(file_data, uploaded_file.name)
+                            st.write(f"DEBUG: {uploaded_file.name} has {len(file_summary)} sheets")
                             st.session_state.data_summary.update(file_summary)
 
+                        st.write(f"DEBUG: Total sheets in session state: {len(st.session_state.data_summary)}")
                         st.session_state.data_loaded = True
                         st.session_state.messages = []  # Clear chat history for new data
-                        st.success(f"Processed {len(excel_files)} file(s)!")
+                        st.success(f"Processed {len(excel_files)} file(s)! Total sheets: {len(st.session_state.data_summary)}")
                         st.rerun()
 
         # Display data status
         st.divider()
+        st.subheader("Data Status")
         if st.session_state.data_loaded:
             st.success(f"✅ Data loaded: {len(st.session_state.data_summary)} sheets")
+            if len(st.session_state.data_summary) > 0:
+                with st.expander("View loaded sheets"):
+                    for sheet_name in st.session_state.data_summary.keys():
+                        st.write(f"- {sheet_name}")
+            else:
+                st.error("⚠️ Data marked as loaded but no sheets found!")
         else:
             st.warning("⚠️ No data loaded yet")
+
+        # Debug info
+        with st.expander("Debug Info"):
+            st.write(f"data_loaded: {st.session_state.data_loaded}")
+            st.write(f"data_summary type: {type(st.session_state.data_summary)}")
+            st.write(f"data_summary keys: {list(st.session_state.data_summary.keys())}")
+            st.write(f"Number of sheets: {len(st.session_state.data_summary)}")
 
         # Clear chat button
         if st.button("Clear Chat History"):
