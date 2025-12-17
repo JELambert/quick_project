@@ -61,7 +61,7 @@ def parse_task_list(file_path):
         return "No Task List examples available."
 
 def load_excel_data(file_path_or_buffer, file_name=""):
-    """Load and summarize Excel data"""
+    """Load and summarize Excel data - optimized for token limits"""
     try:
         # Read all sheets
         excel_file = pd.ExcelFile(file_path_or_buffer)
@@ -73,21 +73,25 @@ def load_excel_data(file_path_or_buffer, file_name=""):
             try:
                 df = pd.read_excel(file_path_or_buffer, sheet_name=sheet_name)
 
+                # Skip empty sheets to save tokens
+                if len(df) == 0:
+                    continue
+
                 # Create summary for this sheet
                 summary = f"\n### Sheet: {sheet_name}\n"
                 summary += f"- Rows: {len(df)}\n"
                 summary += f"- Columns: {len(df.columns)}\n"
                 summary += f"- Column Names: {', '.join(df.columns.tolist())}\n"
 
-                # Add sample data (first 10 rows)
-                summary += f"\n**Sample Data (first 10 rows):**\n"
-                summary += df.head(10).to_markdown(index=False)
+                # Add sample data (reduced to 3 rows to save tokens)
+                summary += f"\n**Sample Data (first 3 rows):**\n"
+                summary += df.head(3).to_markdown(index=False)
 
-                # Add basic stats for numeric columns
+                # Add basic stats for numeric columns (limit to 3 columns)
                 numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
                 if numeric_cols:
-                    summary += f"\n\n**Numeric Column Statistics:**\n"
-                    for col in numeric_cols[:5]:  # First 5 numeric columns
+                    summary += f"\n\n**Key Statistics:**\n"
+                    for col in numeric_cols[:3]:  # Limited to 3 numeric columns
                         summary += f"- {col}: min={df[col].min():.2f}, max={df[col].max():.2f}, mean={df[col].mean():.2f}\n"
 
                 data_summary[sheet_name] = summary
@@ -103,13 +107,22 @@ def load_excel_data(file_path_or_buffer, file_name=""):
         st.error(f"Traceback: {traceback.format_exc()}")
         return {}
 
-def create_data_context(data_summary):
-    """Create concise data context for LLM"""
+def create_data_context(data_summary, selected_sheets=None):
+    """Create concise data context for LLM - only includes selected sheets"""
     if not data_summary:
         return "No data loaded."
 
-    context = "\n# Available Data\n"
-    for sheet_name, summary in data_summary.items():
+    # If selected_sheets is provided, filter to only those
+    if selected_sheets:
+        filtered_summary = {k: v for k, v in data_summary.items() if k in selected_sheets}
+    else:
+        filtered_summary = data_summary
+
+    if not filtered_summary:
+        return "No sheets selected for analysis."
+
+    context = f"\n# Available Data ({len(filtered_summary)} sheets)\n"
+    for sheet_name, summary in filtered_summary.items():
         context += summary + "\n"
 
     return context
@@ -120,21 +133,29 @@ def build_system_prompt(task_examples, data_context):
     """Build system prompt with examples and data context"""
     prompt = """You are a financial analyst assistant specializing in analyzing general ledger transactions and balance sheet data.
 
+IMPORTANT: The complete financial data is provided below in this message. You have DIRECT ACCESS to this data. You can and should reference specific numbers, transactions, accounts, and values from the data provided. DO NOT say you cannot access the data - it is right here in your context.
+
 Your role is to:
-1. Analyze transaction-level data to identify patterns, anomalies, and insights
-2. Answer questions about the financial data
-3. Generate data-driven questions for management discussions
+1. Analyze the transaction-level data provided below to identify patterns, anomalies, and insights
+2. Answer questions about the financial data by referencing the specific values shown
+3. Generate data-driven questions for management discussions based on what you see in the data
 4. Help interpret financial information for due diligence purposes
 
 {task_examples}
 
 When analyzing data:
-- Be specific and reference actual numbers from the data
-- Identify unusual transactions or patterns
-- Suggest areas requiring clarification from management
+- Reference specific numbers, accounts, and values from the data tables below
+- Identify unusual transactions or patterns you observe in the data
+- Cite specific examples from the sample rows provided
+- Calculate totals, averages, or trends from the statistics shown
+- Suggest areas requiring clarification based on what you see in the data
 - Format responses clearly with bullet points and sections
 
+===== FINANCIAL DATA (YOU HAVE FULL ACCESS TO THIS DATA) =====
 {data_context}
+===== END OF FINANCIAL DATA =====
+
+Remember: All the data you need is provided above. Analyze it directly and reference specific values.
 """
 
     return prompt.format(task_examples=task_examples, data_context=data_context)
@@ -262,10 +283,35 @@ def main():
         st.subheader("Data Status")
         if st.session_state.data_loaded:
             st.success(f"✅ Data loaded: {len(st.session_state.data_summary)} sheets")
+
+            # Sheet selection to manage context size
             if len(st.session_state.data_summary) > 0:
-                with st.expander("View loaded sheets"):
+                st.info("💡 Select sheets to analyze (reduces context size)")
+
+                # Initialize selected sheets if not exists
+                if "selected_sheets" not in st.session_state:
+                    # Default: select key analysis sheets
+                    key_sheets = ['GL Detail', '1. Income Statement', '2. Balance Sheet',
+                                  '3. Cash Flow Statement', 'POC Lookback Summary']
+                    default_selection = [s for s in key_sheets if s in st.session_state.data_summary.keys()]
+                    if not default_selection:  # If key sheets not found, select first 5
+                        default_selection = list(st.session_state.data_summary.keys())[:5]
+                    st.session_state.selected_sheets = default_selection
+
+                selected_sheets = st.multiselect(
+                    "Sheets to include in analysis:",
+                    options=list(st.session_state.data_summary.keys()),
+                    default=st.session_state.selected_sheets,
+                    help="Select fewer sheets if you hit context length errors"
+                )
+                st.session_state.selected_sheets = selected_sheets
+
+                st.caption(f"Selected: {len(selected_sheets)} of {len(st.session_state.data_summary)} sheets")
+
+                with st.expander("View all loaded sheets"):
                     for sheet_name in st.session_state.data_summary.keys():
-                        st.write(f"- {sheet_name}")
+                        selected_mark = "✓" if sheet_name in selected_sheets else "○"
+                        st.write(f"{selected_mark} {sheet_name}")
             else:
                 st.error("⚠️ Data marked as loaded but no sheets found!")
         else:
@@ -338,8 +384,9 @@ Be thorough and specific, citing actual numbers and examples from the data."""
                 message_placeholder = st.empty()
                 full_response = ""
 
-                # Build messages for API
-                data_context = create_data_context(st.session_state.data_summary)
+                # Build messages for API - use selected sheets only
+                selected_sheets = st.session_state.get("selected_sheets", list(st.session_state.data_summary.keys()))
+                data_context = create_data_context(st.session_state.data_summary, selected_sheets)
                 system_prompt = build_system_prompt(st.session_state.task_examples, data_context)
 
                 messages = [
@@ -372,8 +419,9 @@ Be thorough and specific, citing actual numbers and examples from the data."""
             message_placeholder = st.empty()
             full_response = ""
 
-            # Build messages for API
-            data_context = create_data_context(st.session_state.data_summary)
+            # Build messages for API - use selected sheets only
+            selected_sheets = st.session_state.get("selected_sheets", list(st.session_state.data_summary.keys()))
+            data_context = create_data_context(st.session_state.data_summary, selected_sheets)
             system_prompt = build_system_prompt(st.session_state.task_examples, data_context)
 
             messages = [{"role": "system", "content": system_prompt}]
