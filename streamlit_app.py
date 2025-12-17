@@ -160,6 +160,72 @@ def create_smart_summary(df, sheet_name):
             except Exception as e:
                 pass
 
+        # Revenue pattern analysis (temporal patterns for revenue accounts)
+        if account_cols and year_col:
+            account_col = account_cols[0]
+            try:
+                # Identify revenue accounts (typically 4000-series)
+                revenue_accounts = [acc for acc in df[account_col].unique()
+                                   if pd.notna(acc) and ('4000' in str(acc) or 'revenue' in str(acc).lower())]
+
+                if revenue_accounts:
+                    summary += f"\n**Revenue Pattern Analysis:**\n"
+
+                    # Get month column if available
+                    month_cols = [col for col in df.columns if 'month' in col.lower()]
+
+                    for acc in revenue_accounts[:5]:  # Top 5 revenue accounts
+                        acc_data = df[df[account_col] == acc]
+                        if len(acc_data) < 2:
+                            continue
+
+                        # Analyze transaction frequency
+                        if month_cols:
+                            month_col = month_cols[0]
+                            try:
+                                # Convert month to datetime if needed
+                                acc_data_copy = acc_data.copy()
+                                acc_data_copy['month_dt'] = pd.to_datetime(acc_data_copy[month_col], errors='coerce')
+                                acc_data_copy['year_month'] = acc_data_copy['month_dt'].dt.to_period('M')
+                                acc_data_copy['quarter'] = acc_data_copy['month_dt'].dt.quarter
+
+                                # Count transactions per month and quarter
+                                monthly_txns = acc_data_copy.groupby('year_month').size()
+                                quarterly_txns = acc_data_copy.groupby([year_col, 'quarter']).size()
+
+                                # Detect pattern
+                                pattern = "Unknown"
+                                months_with_txns = set(acc_data_copy['month_dt'].dt.month.dropna())
+
+                                # Check for quarterly pattern (transactions in specific months like 3,6,9,12)
+                                quarterly_months = {3, 6, 9, 12}
+                                if months_with_txns and months_with_txns.issubset(quarterly_months):
+                                    pattern = "Quarterly (Q-end)"
+                                elif len(monthly_txns) > 0 and monthly_txns.mean() >= 0.8:
+                                    pattern = "Monthly"
+                                elif len(quarterly_txns) > 0:
+                                    avg_per_quarter = quarterly_txns.mean()
+                                    if avg_per_quarter < 5:
+                                        pattern = "Quarterly"
+
+                                # Calculate total revenue
+                                total_rev = acc_data[amount_cols[0]].abs().sum()
+
+                                summary += f"\n{acc}:\n"
+                                summary += f"  - Total Revenue: ${total_rev:,.2f}\n"
+                                summary += f"  - Pattern: {pattern}\n"
+                                summary += f"  - Transaction Count: {len(acc_data)}\n"
+
+                                # Add management question hint for quarterly patterns
+                                if "Quarterly" in pattern:
+                                    summary += f"  - ⚠️ Management Question: Is this pre-billed? May require deferred revenue accounting.\n"
+
+                            except Exception as e:
+                                pass
+
+            except Exception as e:
+                pass
+
         # Vendor/Customer breakdown
         if vendor_cols and len(vendor_cols) > 0:
             vendor_col = vendor_cols[0]
