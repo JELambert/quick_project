@@ -1,0 +1,22 @@
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Streamlit
+.streamlit/
+
+# Data files (optional - comment out if you want to include them in repo)
+# *.xlsx
+# *.docx
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
